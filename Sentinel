@@ -1,0 +1,103 @@
+
+// SENTINEL CLOUD MASKING
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return image.updateMask(mask).divide(10000);
+}
+
+//FILTERING IMAGE COLLECTION
+var sentinel_2 = ee.ImageCollection('COPERNICUS/S2')
+                  .filterDate('2021-01-01', '2021-01-31')
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+                  .filterBounds(geometry)
+                  .map(maskS2clouds)
+                  .median()
+                  
+//IMAGE STYLE                 
+var rgbVis = {
+  min: 0.004,
+  max: 0.39,
+  bands: ['B11', 'B8', 'B4'],
+};
+
+//ADDITIONAL BANDS     
+var ndvi = sentinel_2.expression('(NIR - Red) / (NIR + Red)', {
+          'NIR': sentinel_2.select('B8'),
+          'Red': sentinel_2.select('B4')
+          })
+          
+var ndwi = sentinel_2.expression('(Green - NIR) / (Green + NIR)', {
+          'NIR': sentinel_2.select('B8'),
+          'Green': sentinel_2.select('B3')
+          })
+  
+var savi = sentinel_2.expression('((NIR - Red) / (NIR + Red +0.5)) * (1.0+0.5)', {
+          'NIR': sentinel_2.select('B8'),
+          'Red': sentinel_2.select('B4')
+          })
+
+//ADD ADITIONAL BANDS TO FINAL IMAGE
+var final_image = sentinel_2.addBands(ndvi.rename('NDVI'))
+                            .addBands(ndwi.rename('NDWI'))
+                            .addBands(savi.rename('SAVI'))
+                            
+//BANDS FOR PREDICTION
+var bands = ['B2','B3','B4','B5','B8','B9','B11', 'NDVI', 'NDWI', 'SAVI']
+
+//Add Study Area Boundary
+Map.addLayer(geometry,{}, "Study Area");
+
+// Define the visualization parameters.
+var vizParams = {
+  bands: ['B8', 'B4', 'B3'],
+  min: 0,
+  max: 0.5,
+  gamma: [0.95, 1.1, 1]
+};
+
+// Center the map and display the image.
+Map.addLayer(sentinel_2.clip(geometry), vizParams, 'false color composite');
+
+
+// print(final_image)
+Map.addLayer(final_image.clip(geometry), rgbVis, 'Image')
+
+//MERGE FEATURES
+var samples = vegetation.merge(bare_land).merge(builtup).merge(water)
+
+//CREATE SAMPLE REGION
+var total_sample = final_image.select(bands).sampleRegions({
+  collection:samples,
+  properties: ['name', 'id'],
+  scale: 20 
+})
+// print(total_sample)
+
+//CREATE CLASSIFIER
+var classifier = ee.Classifier.smileRandomForest(10).train({
+  features:total_sample,
+  classProperty: 'id',
+  inputProperties: bands
+})
+
+//CLASSIFICATION
+var classification = final_image.select(bands).classify(classifier)
+
+Map.addLayer(classification.clip(geometry), lc_style, 'classification')
+
+// Exporting result
+Export.image.toDrive({
+  image: classification,
+  description: "LULC",
+  folder: "Google Earth Studio",
+}); 
+
