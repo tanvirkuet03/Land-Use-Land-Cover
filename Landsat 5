@@ -1,0 +1,61 @@
+var dataset = landsat.filterBounds(KCC)
+                     .filterDate("2005-01-05", "2005-01-25")
+                     .filterMetadata("CLOUD_COVER", "less_Than", 1)
+                     .mean();
+var image = dataset.select(["B3", "B2", "B1", "B4", "B5", "B6"]);
+print(image);
+var KCC_image_2005 = image.clip(KCC);
+Map.setCenter(89.5421,22.8346, 11);
+Map.addLayer(KCC,{}, "KCC_boundary");
+Map.addLayer(KCC_image_2005, {}, "KCC_image_2005");
+
+// set the selection bands
+var predictionBands = image.bandNames();
+
+// Merging Sample features
+
+var training_data = Waterbody.merge(Vegetation).merge(Barren_soil).merge(Builtup).merge(Cropland);
+// sample training region
+
+var classifierTraining = image.select(predictionBands).sampleRegions({
+  collection: training_data,
+  properties: ['Land_Cover'],
+  scale: 30
+});
+print(training_data);
+
+// adding classifer
+var classifier = ee.Classifier.smileRandomForest(300).train({features:classifierTraining, 
+                                                    classProperty:'Land_Cover', 
+                                                   inputProperties: predictionBands
+});
+print(classifier);
+
+// Classification
+var classifier_image = image.select(predictionBands).classify(classifier);
+var KCC_LULC_2005 = classifier_image.clip(KCC);
+Map.addLayer(KCC_LULC_2005, {min: 1, max: 5,
+  palette: ['red', 'green', 'blue', 'yellow', 'orange']
+}, "KCC_LULC_2005");
+print(classifier);
+
+// Exporting result
+Export.image.toDrive({
+  image: KCC_LULC_2005,
+  description: "KCC_LULC_2005",
+  folder: "Thesis_GEE",
+}); 
+ // Accuracy Assesment 
+ 
+var validationData = valWaterbody.merge(valVegetation).merge(valBuiltup).merge(valCropland).merge(valBarren_soil);
+
+var validation = image.sampleRegions({collection: validationData, properties: ['Land_Cover'], scale:30,tileScale: 16});
+
+var validated = validation.classify(classifier);
+
+// Confusion Matrix  and user / producer's accuracies, overall accuracires and Kappa
+
+var testAccuracy = validated.errorMatrix('Land_Cover', 'classification');
+print('Validation error matrix: ', testAccuracy);
+print('Validation overall accuracy: ', testAccuracy.accuracy(), testAccuracy.consumersAccuracy(),  testAccuracy.kappa(), 
+      testAccuracy.producersAccuracy());
